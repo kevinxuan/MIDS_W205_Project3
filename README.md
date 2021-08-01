@@ -1,86 +1,165 @@
-# Project 3: Understanding User Behavior
+# W205 Project 3 - Group 4
+#### Authors: Chetan Munugala, Kevin Xuan, Yao Chen, Yi Zhang
 
-- You're a data scientist at a game development company  
+# Introduction
 
-- Your latest mobile game has two events you're interested in tracking: `buy a
-  sword` & `join guild`
+In this report, we want to setup our data pipeline starting from generating synthetic events to substitute the raw data from devices, logging events into kafka, and using Spark to land data to HDFS to utilizing Presto to query events from HDFS for insights. 
 
-- Each has metadata characterstic of such events (i.e., sword type, guild name,
-  etc)
+As data scientists in the game development company, we are interested in tracking whether a player joins a guild and how his or her cashes are earned in the game. Since we do not have raw data to start from, we will use `Apache Bench` to constantly generate different events for each user to replicate the process of streaming data. As we want to store these events into Kafka, we will have `Spark` to constantly extract data from streaming data, transform data to structured data, and save data into HDFS so that data scientists can use Presto to query data from the database to perform data analysis.
 
+The objective of this project is to help us develop the skill to be able to build the entire data pipeline rather than ask data engineers to have the data ready for us. With this skillset and knowing what data we need in order to build a good predictive model which solves our business problem, we will directly access raw data, transform and store it into HDFS, and use distributed query programming language to obtain the table with the features we want.
 
-## Tasks
+# Procedure
+### Setup Docker-Compose Environment
+The first thing we need to do is to have the docker-compose environment ready. For this project, we will need zookeeper, kafka, cloudera, spark, presto, and mids container. With zookeeper and kafka container, we are able to create a topic under kafka and publish streaming data into the topic via MIDS container. Then we will go through transformation and filtering of data in the Spark container, and after that we will have cloudera container be ready to store large amount of streaming data. At the end, we have Presto container to query features in which we are interested to a structured table used for further data analysis and predictive model building.
 
-- Instrument your API server to log events to Kafka
-
-- Assemble a data pipeline to catch these events: use Spark streaming to filter
-  select event types from Kafka, land them into HDFS/parquet to make them
-  available for analysis using Presto. 
-
-- Use Apache Bench to generate test data for your pipeline.
-
-- Produce an analytics report where you provide a description of your pipeline
-  and some basic analysis of the events. Explaining the pipeline is key for this project!
-
-- Submit your work as a git PR as usual. AFTER you have received feedback you have to merge 
-  the branch yourself and answer to the feedback in a comment. Your grade will not be 
-  complete unless this is done!
-
-Use a notebook to present your queries and findings. Remember that this
-notebook should be appropriate for presentation to someone else in your
-business who needs to act on your recommendations. 
-
-It's understood that events in this pipeline are _generated_ events which make
-them hard to connect to _actual_ business decisions.  However, we'd like
-students to demonstrate an ability to plumb this pipeline end-to-end, which
-includes initially generating test data as well as submitting a notebook-based
-report of at least simple event analytics. That said the analytics will only be a small
-part of the notebook. The whole report is the presentation and explanation of your pipeline 
-plus the analysis!
+To start all these clusters, run:
+```
+docker-compose up -d
+```
+and we will see
+```
+Creating network "project3-group-4_default" with the default driver
+Creating project3-group-4_mids_1      ... done
+Creating project3-group-4_zookeeper_1 ... done
+Creating project3-group-4_cloudera_1  ... done
+Creating project3-group-4_presto_1    ... done
+Creating project3-group-4_kafka_1     ... done
+Creating project3-group-4_spark_1     ... done
+```
+This indicates that we have successfully spinned up all the clusters we need for this project.
 
 
-## Options
+### Instrument the API logs
+In the `game_api.py` python file, we have setup a web API so that we are able to capture the raw data from the devices who are calling making API calls. 
 
-There are plenty of advanced options for this project.  Here are some ways to
-take your project further than just the basics we'll cover in class:
+This is done in the [game_api.py](./game_api.py) file with the following events:
+- default_event
+- purchase_a_sword
+- join_a_guild
+- quit_guild
+- get_paid
 
-- Generate and filter more types of events.  There are plenty of other things
-  you might capture events for during gameplay
+When one of these actions is being conducted on a device, the device will then call the corresponding API, and with the function `log_to_kafka` in the python file, the events will be sent to kafka.
 
-- Enhance the API to use additional http verbs such as `POST` or `DELETE` as
-  well as additionally accept _parameters_ for events (e.g., purchase events
-  might accept sword or item type)
+To bring the server up, run 
+```
+docker-compose exec mids env FLASK_APP=/w205/project3-group-4/game_api.py flask run --host 0.0.0.0
+```
 
-- Connect a user-keyed storage engine such as Redis or Cassandra up to Spark so
-  you can track user state during gameplay (e.g., user's inventory or health)
-  
----
 
-#### GitHub Procedures
+### Create Kafka Topic
+Next, we create a Kafka Topic named `events` to have the data temporary stored. To create the topic, run
+```
+docker-compose exec kafka kafka-topics --create --topic events --partitions 1 --replication-factor 1 --if-not-exists --zookeeper zookeeper:32181
+```
+Then we will see the following result
 
-Important:  In w205, please never merge your assignment branch to the master branch. 
+"Created topic events."
 
-Using the git command line: clone down the repo, leave the master branch untouched, create an assignment branch, and move to that branch:
-- Open a linux command line to your virtual machine and be sure you are logged in as jupyter.
-- Create a ~/w205 directory if it does not already exist `mkdir ~/w205`
-- Change directory into the ~/w205 directory `cd ~/w205`
-- Clone down your repo `git clone <https url for your repo>`
-- Change directory into the repo `cd <repo name>`
-- Create an assignment branch `git branch assignment`
-- Checkout the assignment branch `git checkout assignment`
+Then, open a new terminal and run the following:
+```
+docker-compose exec mids kafkacat -C -b kafka:29092 -t events -o beginning
+```
+to watch streaming events getting published into to Kafka every once while.
 
-The previous steps only need to be done once.  Once you your clone is on the assignment branch it will remain on that branch unless you checkout another branch.
+### Register Hive Table
+This will mark the parquet files that we'll be landing in HDFS as a logical Hive table, so that it can be queries via Presto. We use [write_hive_table.py](./write_hive_table.py) to create external table `hive_events` and store as parquet in /tmp/game_events/.
 
-The project workflow follows this pattern, which may be repeated as many times as needed.  In fact it's best to do this frequently as it saves your work into GitHub in case your virtual machine becomes corrupt:
-- Make changes to existing files as needed.
-- Add new files as needed
-- Stage modified files `git add <filename>`
-- Commit staged files `git commit -m "<meaningful comment about your changes>"`
-- Push the commit on your assignment branch from your clone to GitHub `git push origin assignment`
+To set this up, run:
+```
+docker-compose exec spark spark-submit /w205/project3-group-4/write_hive_table.py
+```
 
-Once you are done, go to the GitHub web interface and create a pull request comparing the assignment branch to the master branch.  Add your instructor, and only your instructor, as the reviewer.  The date and time stamp of the pull request is considered the submission time for late penalties. 
 
-If you decide to make more changes after you have created a pull request, you can simply close the pull request (without merge!), make more changes, stage, commit, push, and create a final pull request when you are done.  Note that the last data and time stamp of the last pull request will be considered the submission time for late penalties.
+### Processing events using Spark Streaming
+To process the streaming events, including filtering out the irrelevant ones, we set up a pipeline using Spark Structured Streaming.
 
-Make sure you receive the emails related to your repository! Your project feedback will be given as comment on the pull request. When you receive the feedback, you can address problems or simply comment that you have read the feedback. 
-AFTER receiving and answering the feedback, merge you PR to master. Your project only counts as complete once this is done.
+When submitted, the spark submit job will run every 10 seconds and land these streaming events into HDFS.
+
+To start the process, run:
+```
+docker-compose exec spark spark-submit --conf "spark.sql.parquet.writeLegacyFormat=true" /w205/project3-group-4/write_event_stream.py
+```
+Notice the `spark.sql.parquet.writeLegacyFormat` configuration parameter is to ensure the format of parquet file is compatible with Hive, so data can be sucessfully read via Presto.
+
+
+### Generating synthetic data using Apache Bench
+For this project, we do not have actual devices which constantly generates streaming events. Hence, we will utilize Apache Bench to stimulate the data generating process so that we are able to test our data pipeline.
+
+Now with the pipeline setup, we are finally ready to open the firehose of events. To generate events, we have put the generation of different combination of events in the shell script [generate_events.sh](./generate_events.sh).
+
+Open another terminal and run the following:
+```
+while true; do
+  bash generate_events.sh
+  sleep 10
+done
+```
+to generate streaming events.
+
+Note: the command above will not terminate. Press `Ctrl+C` to abort the process of generation of streaming events.
+
+### Checking whether data has been saved in HDFS
+To check whether events are constantly landing into HDFS, open another terminal and
+run the following:
+```
+docker-compose exec cloudera hadoop fs -ls /tmp/game_events/
+```
+every once while.
+
+We should see more parquet files being generated if we keep Apache Bench running in the previous terminal.
+
+
+### Querying the events using Presto
+We can also see the growing data in the registered table `hive_events` via Presto.
+
+First enter the Presto environment by running:
+```
+docker-compose exec presto presto --server presto:8080 --catalog hive --schema default
+```
+
+This gets into an interactive shell with Presto. To query the landed events, simply run:
+```sql
+describe hive_events;
+```
+and we will see a structured table with below columns and types:
+```
+   Column   |     Type      | Comment 
+------------+---------------+---------
+ raw_event  | varchar       |
+ timestamp  | varchar       |
+ accept     | varchar       |         
+ host       | varchar       |         
+ user_agent | varchar       |         
+ event_type | varchar       |         
+ user       | varchar       |         
+ price      | decimal(10,0) |         
+ type       | varchar       |         
+ fee        | decimal(10,0) |         
+ name       | varchar       |         
+ amount     | decimal(10,0) |         
+
+(12 rows)
+```
+In order to check if events are generated and kicked into HDFS with streaming, we can run:
+```sql
+select count(*) from hive_events;
+```
+As events are continuously being landed in HDFS, we can run the Presto `select count (*)` command above every once while, and we should see the count number of rows of data will be increasing over time.
+
+Now, we can query the data we want from the table through Presto.
+
+
+# Conclusion
+By running the above commands, we are able to assemble a completed data pipeline to catch the events originally defined in the [game_api.py](./game_api.py) file. We first use the API server to kick in events into Kafka, and then leverage Spark streaming to land these events data into HDFS. We use the Apache Bench to stimulate the data generating process periodically and track the schema with hive metastore. Lastly, we are able to query the hive table with Presto and perform analysis on top of that.
+
+
+# Files Submitted
+- An analytics report (with a description of pipeline and some basic analysis)
+- game_api.py
+- generate_events.sh
+- write_hive_table.py
+- write_event_stream.py
+- docker-compose.yml
+
